@@ -8,78 +8,47 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.linear_model import LogisticRegression
 import xgboost as xgb
 
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.metrics import accuracy_score, roc_auc_score, classification_report, confusion_matrix
+
+
 from rf_training import rf_model_train
 from dt_training import decision_tree_train
 from lr_training import lr_model_train
 from xgboost_training import xgb_model_train
 
 from params import param_assign
-
 from cross_vali import cross_val_with_smote
-
 
 dataset = "healthcare_real_time_dataset.csv"
 
 def main():
 
-    rf_params, dt_params, lr_params, xgb_params = param_assign()
+    def ytarget_binary_convert(y, positive_class='High'):
+        return y.apply(lambda x: 1 if x == positive_class else 0)
 
-
-    def read_data(data):
-        df = pd.read_csv(data)
-        exploratory_step(df)
-        return df
-        """
-        assigns the raw dataset to a df variable.
-        """
-
-    def preprocess_data(df):
-
-        df_processed = pd.get_dummies(df, drop_first=True)
-
-        training_split(df_processed)
-        
-
-    def exploratory_step(dataframe):
-        """
-        Exploring the dataset
-        """
-        record_count = dataframe.shape[0]
-        higher_age_split = dataframe[dataframe['Age'] < 50].shape[0]
-        lower_age_split = dataframe[dataframe['Age'] > 50].shape[0]
-        print(dataframe.info())
-        print("")
-        print(f"Total records: {record_count}")
-        print(f"Number of patients aged 50 or older: {higher_age_split}")
-        print(f"Number of patients younger than 50: {lower_age_split}")
-        print("")
+    def exploratory_step(df):
+        print(df.info())
+        print()
+        print(f"Total records: {df.shape[0]}")
+        print(f"Number of patients aged 50 or older: {(df['Age'] >= 50).sum()}")
+        print(f"Number of patients younger than 50: {(df['Age'] < 50).sum()}")
+        print()
         print("CHECK FOR MISSING VALUES")
-        print(dataframe.isnull().sum())
-        print("")
+        print(df.isnull().sum())
+        print()
         print("CHECK FOR DUPLICATE ROWS")
-        print(dataframe.duplicated().sum())
+        print(df.duplicated().sum())
 
-
-        
     def preprocess_data(df):
+        # Fill missing values
+        df['Chronic Disease History'] = df['Chronic Disease History'].fillna('Unknown')
 
-        # Fill missing values in 'Chronic Disease History' with 'Unknown'
-        df.loc[:, 'Chronic Disease History'] = df['Chronic Disease History'].fillna('Unknown')
-
-        # Feature Engineering
-
-        # Age groups
+        # Feature engineering
         df['Age_Group'] = pd.cut(df['Age'], bins=[0, 30, 50, 100], labels=['Young Adult', 'Middle Aged', 'Senior'])
-
-        # BMI
         df['BMI_Category'] = pd.cut(df['BMI'], bins=[0, 18.5, 25, 32, 100], labels=['Underweight', 'Normal', 'Overweight', 'Obese'])
-
-        # Sedentary vs Active flag
         df['Is_Active'] = (df['Physical Activity (hours/week)'] >= 2.5).astype(int)
 
-
-
-        # Lifestyle risk score
         def lifestyle_score(row):
             score = 0
             if row['Sleep Duration (hours/day)'] >= 7:
@@ -93,64 +62,104 @@ def main():
             return score
 
         df['Lifestyle_Score'] = df.apply(lifestyle_score, axis=1)
-
-        # Stress-Sleep ratio
         df['Stress_Sleep_Ratio'] = df['Stress Level (1-10)'] / df['Sleep Duration (hours/day)']
 
-        # Separate target variable
         y = df['Health Risk Level']
         X = df.drop('Health Risk Level', axis=1)
 
-        # One-hot encode categorical features including new categorical features
         X_encoded = pd.get_dummies(X, drop_first=True)
-
         return X_encoded, y
-        
 
     def training_split(X, y):
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=123
+            X, y, test_size=0.2, random_state=123, stratify=y
         )
-
         print(f"Training set size: {X_train.shape[0]}")
         print(f"Testing set size: {X_test.shape[0]}")
-        
-        rf_model_train(X_train, X_test, y_train, y_test)
-        decision_tree_train(X_train, X_test, y_train, y_test)
-        lr_model_train(X_train, X_test, y_train, y_test)
-
-        # Cross-validation with SMOTE calls
-        print("Random Forest CV with SMOTE:")
-        cross_val_with_smote(RandomForestClassifier, X, y, model_params=rf_params, n_splits=5)
-
-        print("Decision Tree CV with SMOTE:")
-        cross_val_with_smote(DecisionTreeClassifier, X, y, model_params=dt_params, n_splits=5)
-
-        print("Logistic Regression CV with SMOTE:")
-        cross_val_with_smote(LogisticRegression, X, y, model_params=lr_params, n_splits=5, use_scaler=True)
-
-        print("XGBoost CV with SMOTE:")
-        cross_val_with_smote(xgb.XGBClassifier, X, y, model_params=xgb_params, n_splits=5)
-
         return X_train, X_test, y_train, y_test
 
+    def xgb_hyperparameter_tuning(X_train, y_train):
+        param_dist = {
+            'max_depth': [3, 5, 7, 10],
+            'learning_rate': [0.01, 0.05, 0.1, 0.2],
+            'n_estimators': [50, 100, 200],
+            'subsample': [0.6, 0.8, 1.0],
+            'colsample_bytree': [0.6, 0.8, 1.0],
+            'scale_pos_weight': [1, 2, 5, 10]
+        }
 
-    # execution steps
-    df = read_data(dataset)
+        model = xgb.XGBClassifier(
+            objective='binary:logistic',
+            eval_metric='logloss',
+            random_state=123
+        )
 
+        random_search = RandomizedSearchCV(
+            model,
+            param_distributions=param_dist,
+            n_iter=20,
+            scoring='roc_auc',
+            cv=5,
+            verbose=2,
+            n_jobs=-1,
+            random_state=123
+        )
+
+        random_search.fit(X_train, y_train)
+
+        print("Best parameters found:")
+        print(random_search.best_params_)
+        print(f"Best ROC AUC: {random_search.best_score_:.3f}")
+
+        return random_search.best_estimator_
+
+    # Main execution starts here
+    rf_params, dt_params, lr_params, xgb_params = param_assign()
+
+    df = pd.read_csv(dataset)
+    exploratory_step(df)
     X, y = preprocess_data(df)
-    X_train, X_test, y_train, y_test = training_split(X, y)
+    # Convert target to binary
+    y_binary = ytarget_binary_convert(y, positive_class='High')
+    X_train, X_test, y_train, y_test = training_split(X, y_binary)
 
-    
+    # Run Tuning
+    best_xgb_model = xgb_hyperparameter_tuning(X_train, y_train)
+    # Evaluate tuned model on test set
+    y_pred = best_xgb_model.predict(X_test)
+    y_prob = best_xgb_model.predict_proba(X_test)[:, 1]
 
+    accuracy = accuracy_score(y_test, y_pred)
+    roc_auc = roc_auc_score(y_test, y_prob)
+
+    print(f"Tuned XGBoost Model Accuracy: {accuracy:.3f}")
+    print(f"Tuned XGBoost Model ROC AUC: {roc_auc:.3f}")
+
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred))
+
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+
+    # Train models on binary target
     rf_model_train(X_train, X_test, y_train, y_test)
     decision_tree_train(X_train, X_test, y_train, y_test)
     lr_model_train(X_train, X_test, y_train, y_test)
 
+    # Cross-validation with SMOTE on binary target
+    print("Random Forest CV with SMOTE:")
+    cross_val_with_smote(RandomForestClassifier, X, y_binary, model_params=rf_params, n_splits=5)
 
-  
+    print("Decision Tree CV with SMOTE:")
+    cross_val_with_smote(DecisionTreeClassifier, X, y_binary, model_params=dt_params, n_splits=5)
+
+    print("Logistic Regression CV with SMOTE:")
+    cross_val_with_smote(LogisticRegression, X, y_binary, model_params=lr_params, n_splits=5, use_scaler=True)
+
+    print("XGBoost CV with SMOTE:")
+    cross_val_with_smote(xgb.XGBClassifier, X, y_binary, model_params=xgb_params, n_splits=5)
+
     print(y_train.value_counts())
 
 if __name__ == "__main__":
     main()
-

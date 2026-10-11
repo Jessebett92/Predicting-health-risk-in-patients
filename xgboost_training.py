@@ -1,31 +1,31 @@
 import xgboost as xgb
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, roc_auc_score
 
 def xgb_model_train(X_train, X_test, y_train, y_test):
-    # Encode target labels
-    le = LabelEncoder()
-    y_train_enc = le.fit_transform(y_train)
-    y_test_enc = le.transform(y_test)
+
+    # Calculate scale_pos_weight as ratio of negative to positive samples in training data
+    scale_pos_weight = sum(y_train == 0) / sum(y_train == 1)
 
     model = xgb.XGBClassifier(
-        objective='multi:softmax',
-        num_class=len(le.classes_),
-        eval_metric='mlogloss',
-        use_label_encoder=False,
+        objective='binary:logistic',
+        eval_metric='logloss',
         random_state=123,
         n_estimators=100,
         max_depth=6,
-        learning_rate=0.1
+        learning_rate=0.1,
+        scale_pos_weight=sum(y_train == 0) / sum(y_train == 1)
     )
 
-    model.fit(X_train, y_train_enc)
+    model.fit(X_train, y_train)
 
-    y_pred_enc = model.predict(X_test)
-    y_pred = le.inverse_transform(y_pred_enc)
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
 
     accuracy = accuracy_score(y_test, y_pred)
-    print(f"Accuracy of the XGBoost Model: {accuracy:.2f}")
+    roc_auc = roc_auc_score(y_test, y_prob)
+
+    print(f"Accuracy of the XGBoost Model: {accuracy:.3f}")
+    print(f"ROC AUC Score: {roc_auc:.3f}")
 
     print("\nClassification Report:")
     print(classification_report(y_test, y_pred))
